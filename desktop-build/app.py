@@ -308,6 +308,10 @@ class PerfoStudioApp:
 
         ttk.Separator(parent).pack(fill="x", pady=8)
 
+        ttk.Button(parent, text="Сбросить настройки", command=self.reset_settings).pack(fill="x", pady=(0, 8))
+
+        ttk.Separator(parent).pack(fill="x", pady=8)
+
         # --- Экспорт ---
         ttk.Label(parent, text="Экспорт", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         ttk.Button(parent, text="Экспорт DXF", command=self.export_dxf).pack(fill="x", pady=2)
@@ -401,6 +405,41 @@ class PerfoStudioApp:
         w, h = self.board_width.get(), self.board_height.get()
         self.board_width.set(h)
         self.board_height.set(w)
+        self.recalculate()
+
+    def reset_settings(self) -> None:
+        """Возвращает все параметры (перфорация, G-code, размер листа)
+        к значениям по умолчанию — как DEFAULT_SETTINGS/DEFAULT_GCODE на сайте."""
+        # Сначала расширяем диапазоны min/max отверстия, чтобы установка
+        # значений по умолчанию не была обрезана текущими лимитами.
+        self.min_hole_f.set_range(0.5, 20)
+        self.max_hole_f.set_range(0.5, 20)
+
+        self.spacing_f.set(DEFAULT_SETTINGS.spacing)
+        self.min_hole_f.set(DEFAULT_SETTINGS.min_hole)
+        self.max_hole_f.set(DEFAULT_SETTINGS.max_hole)
+        self.sensitivity_f.set(DEFAULT_SETTINGS.sensitivity)
+        self.threshold_f.set(DEFAULT_SETTINGS.threshold)
+
+        # Восстанавливаем связанные диапазоны (как при обычном изменении полей)
+        self.max_hole_f.set_range(self.min_hole_f.get() + 0.5, 20)
+        self.min_hole_f.set_range(0.5, self.max_hole_f.get() - 0.5)
+        self.threshold_f.set_range(0, self.max_hole_f.get())
+
+        self.shape_var.set(DEFAULT_SETTINGS.shape)
+        self.stagger_var.set(DEFAULT_SETTINGS.stagger)
+        self.invert_var.set(DEFAULT_SETTINGS.invert)
+
+        self.feed_rate_f.set(DEFAULT_GCODE.feed_rate)
+        self.plunge_rate_f.set(DEFAULT_GCODE.plunge_rate)
+        self.safe_z_f.set(DEFAULT_GCODE.safe_z)
+        self.cut_depth_f.set(DEFAULT_GCODE.cut_depth)
+        self.tool_diameter_f.set(DEFAULT_GCODE.tool_diameter)
+        self.spindle_speed_f.set(DEFAULT_GCODE.spindle_speed)
+
+        self.board_width.set(600)
+        self.board_height.set(400)
+
         self.recalculate()
 
     def recalculate(self) -> None:
