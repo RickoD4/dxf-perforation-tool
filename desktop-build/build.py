@@ -6,6 +6,8 @@
     python build.py my_script.py     -> соберёт указанный файл
     python build.py my_script.py MyAppName   -> с указанным именем .exe
 
+Проще всего: дважды кликните на СОБРАТЬ.bat — он сам найдёт Python и запустит сборку.
+
 Что делает скрипт:
     1. Проверяет, установлен ли PyInstaller — если нет, ставит через pip.
     2. Запускает сборку в режиме "один файл" (--onefile), без консольного окна.
@@ -20,6 +22,28 @@ import sys
 import shutil
 from pathlib import Path
 
+# На старых консолях Windows (cp866/cp1251) вывод кириллицы через print()
+# может падать с UnicodeEncodeError. Переключаем stdout/stderr на UTF-8,
+# если интерпретатор это поддерживает (Python 3.7+).
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def ensure_pip() -> None:
+    """Проверяет, что pip доступен, и при необходимости устанавливает его."""
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "--version"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        print("pip не найден, устанавливаю через ensurepip...")
+        subprocess.check_call([sys.executable, "-m", "ensurepip", "--upgrade"])
+
 
 def ensure_pyinstaller() -> None:
     """Устанавливает PyInstaller, если он ещё не установлен."""
@@ -27,19 +51,26 @@ def ensure_pyinstaller() -> None:
         import PyInstaller  # noqa: F401
         print("PyInstaller уже установлен.")
     except ImportError:
-        print("Устанавливаю PyInstaller...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pyinstaller"])
+        print("Устанавливаю PyInstaller (это может занять 1-2 минуты)...")
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "--upgrade", "--no-input", "pyinstaller",
+        ])
 
 
 def build_exe(script_path: str, app_name: str, console: bool) -> Path:
     """Собирает .exe из указанного скрипта и возвращает путь к готовому файлу."""
     script = Path(script_path).resolve()
     if not script.exists():
-        raise FileNotFoundError(f"Файл не найден: {script}")
+        raise FileNotFoundError(
+            f"Файл не найден: {script}\n"
+            f"Убедитесь, что .py файл лежит рядом с build.py, "
+            f"либо укажите правильный путь: python build.py путь\\к\\файлу.py"
+        )
 
     args = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
+        "--noconfirm",
         "--name", app_name,
         "--distpath", "dist",
         "--workpath", "build",
@@ -53,7 +84,13 @@ def build_exe(script_path: str, app_name: str, console: bool) -> Path:
     print("Запускаю сборку:", " ".join(args))
     subprocess.check_call(args)
 
+    # На Windows PyInstaller сам добавляет расширение .exe к имени.
     exe_path = Path("dist") / f"{app_name}.exe"
+    if not exe_path.exists():
+        # На случай иной платформы/конфигурации — файл без расширения.
+        alt = Path("dist") / app_name
+        if alt.exists():
+            exe_path = alt
     return exe_path
 
 
@@ -66,21 +103,49 @@ def cleanup(app_name: str) -> None:
             path.unlink(missing_ok=True)
 
 
-def main() -> None:
+def run() -> int:
     script_path = sys.argv[1] if len(sys.argv) > 1 else "app.py"
     app_name = sys.argv[2] if len(sys.argv) > 2 else "App"
     # Если нужен видимый терминал (например, для консольных утилит) —
     # запустите: python build.py app.py App console
     console = len(sys.argv) > 3 and sys.argv[3].lower() == "console"
 
+    ensure_pip()
     ensure_pyinstaller()
     exe_path = build_exe(script_path, app_name, console)
     cleanup(app_name)
 
     if exe_path.exists():
         print(f"\nГотово! Файл создан: {exe_path.resolve()}")
+        return 0
     else:
         print("\nСборка завершилась, но .exe не найден — проверьте вывод выше на ошибки.")
+        return 1
+
+
+def main() -> None:
+    try:
+        code = run()
+    except subprocess.CalledProcessError as e:
+        print(f"\nОШИБКА: команда завершилась с кодом {e.returncode}.")
+        print("Проверьте сообщения выше — обычно там указана точная причина.")
+        code = 1
+    except FileNotFoundError as e:
+        print(f"\nОШИБКА: {e}")
+        code = 1
+    except Exception as e:  # неожиданная ошибка — не даём окну закрыться молча
+        print(f"\nНЕОЖИДАННАЯ ОШИБКА: {e}")
+        code = 1
+
+    # Если скрипт запущен двойным кликом (не из консоли), окно закроется
+    # мгновенно и результат будет не виден — держим его открытым.
+    if sys.stdin.isatty():
+        try:
+            input("\nНажмите Enter, чтобы закрыть окно...")
+        except EOFError:
+            pass
+
+    sys.exit(code)
 
 
 if __name__ == "__main__":
