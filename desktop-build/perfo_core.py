@@ -139,12 +139,15 @@ def generate_perforation(
             x = c * s.spacing + s.spacing / 2 + offset
             if x > board_width_mm:
                 continue
-            holes.append(Hole(x=x, y=r * s.spacing + s.spacing / 2, d=round(d, 2)))
+            # Округление "как в JS" (Math.round — половина всегда вверх),
+            # а не банковское округление round() из Python.
+            d_rounded = math.floor(d * 100 + 0.5) / 100
+            holes.append(Hole(x=x, y=r * s.spacing + s.spacing / 2, d=d_rounded))
 
     return PerfoResult(
         holes=holes,
-        width_mm=round(board_width_mm),
-        height_mm=round(board_height_mm),
+        width_mm=math.floor(board_width_mm + 0.5),
+        height_mm=math.floor(board_height_mm + 0.5),
         cols=cols,
         rows=rows,
         shape=s.shape,
