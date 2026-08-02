@@ -34,6 +34,7 @@ from perfo_core import (
     shape_vertices,
     to_dxf,
     to_svg,
+    to_pdf,
     to_csv,
     to_gcode,
 )
@@ -147,10 +148,18 @@ class PerfoStudioApp:
         self.root.minsize(960, 640)
 
         self.image: Optional[Image.Image] = None
+        self._original_image: Optional[Image.Image] = None  # для "Цвет" (отмена Ч/Б)
+        self._is_grayscale = False
         self.result = None
         self._thumb_photo = None
 
+        # История настроек перфорации для Undo/Redo (как на сайте)
+        self._history: list = [DEFAULT_SETTINGS]
+        self._history_index = 0
+        self._suspend_history = False
+
         self._build_ui()
+        self._update_history_buttons()
 
     # ------------------------------------------------------------------
     # UI
@@ -195,6 +204,14 @@ class PerfoStudioApp:
         self.preview_label = ttk.Label(parent, text="Изображение не загружено", anchor="center")
         self.preview_label.pack(fill="x", pady=4)
 
+        gray_row = ttk.Frame(parent)
+        gray_row.pack(fill="x", pady=2)
+        self.grayscale_btn = ttk.Button(gray_row, text="Ч/Б", command=self.convert_to_grayscale)
+        self.grayscale_btn.pack(side="left", fill="x", expand=True, padx=(0, 2))
+        self.color_btn = ttk.Button(gray_row, text="Цвет", command=self.revert_to_color)
+        self.color_btn.pack(side="left", fill="x", expand=True, padx=(2, 0))
+        self._update_image_buttons()
+
         ttk.Separator(parent).pack(fill="x", pady=8)
 
         # --- Размер листа --- (совпадает с Sidebar.tsx: min=50, без max)
@@ -218,6 +235,25 @@ class PerfoStudioApp:
         h_entry.bind("<FocusOut>", lambda _e: self.on_board_size_changed())
 
         ttk.Button(size_row, text="↻", width=3, command=self.swap_board_size).grid(row=0, column=4, padx=4)
+
+        ttk.Button(parent, text="Подогнать под изображение", command=self.fit_to_image).pack(fill="x", pady=2)
+
+        # Пресеты размеров листа — как на сайте
+        presets_row1 = ttk.Frame(parent)
+        presets_row1.pack(fill="x", pady=2)
+        presets_row2 = ttk.Frame(parent)
+        presets_row2.pack(fill="x", pady=2)
+        board_presets = [
+            ("A4", 210, 297), ("A3", 297, 420), ("A2", 420, 594),
+            ("A1", 594, 841), ("A0", 841, 1189),
+            ("1000×2000", 1000, 2000), ("1500×3000", 1500, 3000),
+        ]
+        for i, (label, w, h) in enumerate(board_presets):
+            row = presets_row1 if i < 4 else presets_row2
+            ttk.Button(
+                row, text=label, width=9,
+                command=lambda w=w, h=h: self.apply_board_preset(w, h),
+            ).pack(side="left", padx=1, expand=True, fill="x")
 
         ttk.Separator(parent).pack(fill="x", pady=8)
 
@@ -308,6 +344,13 @@ class PerfoStudioApp:
 
         ttk.Separator(parent).pack(fill="x", pady=8)
 
+        history_row = ttk.Frame(parent)
+        history_row.pack(fill="x", pady=(0, 4))
+        self.undo_btn = ttk.Button(history_row, text="↶ Отменить", command=self.undo)
+        self.undo_btn.pack(side="left", fill="x", expand=True, padx=(0, 2))
+        self.redo_btn = ttk.Button(history_row, text="↷ Повторить", command=self.redo)
+        self.redo_btn.pack(side="left", fill="x", expand=True, padx=(2, 0))
+
         ttk.Button(parent, text="Сбросить настройки", command=self.reset_settings).pack(fill="x", pady=(0, 8))
 
         ttk.Separator(parent).pack(fill="x", pady=8)
@@ -316,6 +359,7 @@ class PerfoStudioApp:
         ttk.Label(parent, text="Экспорт", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         ttk.Button(parent, text="Экспорт DXF", command=self.export_dxf).pack(fill="x", pady=2)
         ttk.Button(parent, text="Экспорт SVG", command=self.export_svg).pack(fill="x", pady=2)
+        ttk.Button(parent, text="Экспорт PDF 1:1", command=self.export_pdf).pack(fill="x", pady=2)
         ttk.Button(parent, text="Экспорт CSV", command=self.export_csv).pack(fill="x", pady=2)
         ttk.Button(parent, text="Экспорт G-code", command=self.export_gcode).pack(fill="x", pady=2)
 
@@ -360,20 +404,73 @@ class PerfoStudioApp:
         if not path:
             return
         try:
-            self.image = Image.open(path)
+            img = Image.open(path)
+            img.load()
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось открыть изображение:\n{e}")
             return
 
+        self.image = img
+        self._original_image = img.copy()
+        self._is_grayscale = False
+        self._update_image_buttons()
+        self._update_preview()
+
+        self.recalculate()
+
+    def _update_preview(self) -> None:
+        if self.image is None:
+            return
         thumb = self.image.copy()
         thumb.thumbnail((280, 160))
         thumb_gray = thumb.convert("L").convert("RGB")
         self._thumb_photo = ImageTk.PhotoImage(thumb_gray)
         self.preview_label.configure(image=self._thumb_photo, text="")
 
+    def _update_image_buttons(self) -> None:
+        has_image = self.image is not None
+        self.grayscale_btn.configure(state=("disabled" if (not has_image or self._is_grayscale) else "normal"))
+        self.color_btn.configure(state=("disabled" if (not has_image or not self._is_grayscale) else "normal"))
+
+    def convert_to_grayscale(self) -> None:
+        """Переводит изображение в Ч/Б (та же формула яркости, что и в алгоритме)."""
+        if self.image is None:
+            return
+        self.image = self.image.convert("L").convert("RGB")
+        self._is_grayscale = True
+        self._update_image_buttons()
+        self._update_preview()
+        self.recalculate()
+
+    def revert_to_color(self) -> None:
+        """Восстанавливает исходное цветное изображение."""
+        if self._original_image is None:
+            return
+        self.image = self._original_image.copy()
+        self._is_grayscale = False
+        self._update_image_buttons()
+        self._update_preview()
+        self.recalculate()
+
+    def fit_to_image(self) -> None:
+        """Подгоняет длину листа под пропорции загруженного изображения,
+        сохраняя текущую ширину — как fitToImage() на сайте."""
+        if self.image is None:
+            messagebox.showwarning("Нет изображения", "Сначала загрузите изображение.")
+            return
+        w, h = self.image.size
+        aspect = h / w
+        new_height = round(self.board_width.get() * aspect)
+        self.board_height.set(new_height)
+        self.recalculate()
+
+    def apply_board_preset(self, w: float, h: float) -> None:
+        self.board_width.set(w)
+        self.board_height.set(h)
         self.recalculate()
 
     def on_settings_changed(self) -> None:
+        self._push_history()
         self.recalculate()
 
     def on_min_hole_changed(self) -> None:
@@ -381,11 +478,13 @@ class PerfoStudioApp:
         # а max_hole не может быть меньше min_hole + 0.5.
         self.max_hole_f.set_range(self.min_hole_f.get() + 0.5, 20)
         self.threshold_f.set_range(0, self.max_hole_f.get())
+        self._push_history()
         self.recalculate()
 
     def on_max_hole_changed(self) -> None:
         self.min_hole_f.set_range(0.5, self.max_hole_f.get() - 0.5)
         self.threshold_f.set_range(0, self.max_hole_f.get())
+        self._push_history()
         self.recalculate()
 
     def on_gcode_changed(self) -> None:
@@ -440,7 +539,63 @@ class PerfoStudioApp:
         self.board_width.set(600)
         self.board_height.set(400)
 
+        self._push_history()
         self.recalculate()
+
+    # ------------------------------------------------------------------
+    # История изменений (Undo/Redo) — как на сайте
+    # ------------------------------------------------------------------
+    def _push_history(self) -> None:
+        if self._suspend_history:
+            return
+        settings = self.current_settings()
+        # Обрезаем "будущее", если были откаты назад, и добавляем новое состояние
+        self._history = self._history[: self._history_index + 1]
+        self._history.append(settings)
+        self._history_index = len(self._history) - 1
+        self._update_history_buttons()
+
+    def _apply_settings(self, settings: PerfoSettings) -> None:
+        self._suspend_history = True
+        self.min_hole_f.set_range(0.5, 20)
+        self.max_hole_f.set_range(0.5, 20)
+
+        self.spacing_f.set(settings.spacing)
+        self.min_hole_f.set(settings.min_hole)
+        self.max_hole_f.set(settings.max_hole)
+        self.sensitivity_f.set(settings.sensitivity)
+        self.threshold_f.set(settings.threshold)
+
+        self.max_hole_f.set_range(self.min_hole_f.get() + 0.5, 20)
+        self.min_hole_f.set_range(0.5, self.max_hole_f.get() - 0.5)
+        self.threshold_f.set_range(0, self.max_hole_f.get())
+
+        self.shape_var.set(settings.shape)
+        self.stagger_var.set(settings.stagger)
+        self.invert_var.set(settings.invert)
+        self._suspend_history = False
+
+    def undo(self) -> None:
+        if self._history_index <= 0:
+            return
+        self._history_index -= 1
+        self._apply_settings(self._history[self._history_index])
+        self._update_history_buttons()
+        self.recalculate()
+
+    def redo(self) -> None:
+        if self._history_index >= len(self._history) - 1:
+            return
+        self._history_index += 1
+        self._apply_settings(self._history[self._history_index])
+        self._update_history_buttons()
+        self.recalculate()
+
+    def _update_history_buttons(self) -> None:
+        self.undo_btn.configure(state=("normal" if self._history_index > 0 else "disabled"))
+        self.redo_btn.configure(
+            state=("normal" if self._history_index < len(self._history) - 1 else "disabled")
+        )
 
     def recalculate(self) -> None:
         if self.image is None:
@@ -530,6 +685,22 @@ class PerfoStudioApp:
         if not self._require_result():
             return
         self._save("perforation.svg", ".svg", to_svg(self.result), [("SVG файл", "*.svg")])
+
+    def export_pdf(self) -> None:
+        if not self._require_result():
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pdf", initialfile="perforation.pdf",
+            filetypes=[("PDF файл", "*.pdf")],
+        )
+        if not path:
+            return
+        try:
+            to_pdf(self.result, path)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось создать PDF:\n{e}")
+            return
+        messagebox.showinfo("Готово", f"Файл сохранён:\n{path}")
 
     def export_csv(self) -> None:
         if not self._require_result():

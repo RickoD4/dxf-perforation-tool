@@ -214,6 +214,36 @@ def to_csv(result: PerfoResult) -> str:
     return "\r\n".join(lines)
 
 
+def to_pdf(result: PerfoResult, path: str) -> None:
+    """Экспорт в PDF с реальным масштабом 1:1 в мм (векторный, как печать
+    SVG 1:1 в веб-версии). Использует reportlab: страница ровно
+    width_mm x height_mm, координаты переведены из мм в points (1мм = 72/25.4 pt)."""
+    from reportlab.lib.units import mm as MM
+    from reportlab.pdfgen import canvas as pdf_canvas
+
+    c = pdf_canvas.Canvas(path, pagesize=(result.width_mm * MM, result.height_mm * MM))
+    c.setFillColorRGB(0, 0, 0)
+    for hole in result.holes:
+        # PDF-координаты начинаются снизу-слева, а y перфорации — сверху-вниз.
+        py = (result.height_mm - hole.y) * MM
+        px = hole.x * MM
+        if result.shape == "circle":
+            r = (hole.d / 2) * MM
+            c.circle(px, py, r, stroke=0, fill=1)
+        else:
+            verts = shape_vertices(result.shape, hole.x, result.height_mm - hole.y, hole.d)
+            p = c.beginPath()
+            for i, (vx, vy) in enumerate(verts):
+                if i == 0:
+                    p.moveTo(vx * MM, vy * MM)
+                else:
+                    p.lineTo(vx * MM, vy * MM)
+            p.close()
+            c.drawPath(p, stroke=0, fill=1)
+    c.showPage()
+    c.save()
+
+
 def to_gcode(result: PerfoResult, g: GCodeSettings) -> str:
     """G-code для фрезерного ЧПУ.
     Каждое отверстие: подход → врезание → круговая фреза (G2) → подъём."""

@@ -32,6 +32,25 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception:
             pass
 
+# Все пути (app.py, requirements.txt, dist/, build/) считаем ОТНОСИТЕЛЬНО
+# папки, где лежит сам build.py — а не текущей рабочей директории терминала.
+# Иначе запуск не из этой папки (например "python desktop-build\build.py"
+# из корня проекта) не найдёт нужные файлы и сборка завершится с ошибкой.
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def _pip_install(args: list) -> None:
+    """Устанавливает пакет через pip; при ошибке доступа (PermissionError /
+    "Access is denied" / "Errno 13") повторяет попытку с флагом --user,
+    который не требует прав администратора."""
+    full_args = [sys.executable, "-m", "pip", "install", "--upgrade", "--no-input", *args]
+    try:
+        subprocess.check_call(full_args)
+    except subprocess.CalledProcessError:
+        print("Не удалось установить пакет с правами по умолчанию.")
+        print("Повторяю попытку установки в профиль пользователя (--user)...")
+        subprocess.check_call(full_args + ["--user"])
+
 
 def ensure_pip() -> None:
     """Проверяет, что pip доступен, и при необходимости устанавливает его."""
@@ -52,25 +71,24 @@ def ensure_pyinstaller() -> None:
         print("PyInstaller уже установлен.")
     except ImportError:
         print("Устанавливаю PyInstaller (это может занять 1-2 минуты)...")
-        subprocess.check_call([
-            sys.executable, "-m", "pip", "install", "--upgrade", "--no-input", "pyinstaller",
-        ])
+        _pip_install(["pyinstaller"])
 
 
 def ensure_requirements() -> None:
     """Устанавливает зависимости проекта из requirements.txt, если файл есть."""
-    req = Path("requirements.txt")
+    req = BASE_DIR / "requirements.txt"
     if not req.exists():
         return
     print("Устанавливаю зависимости из requirements.txt...")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "--upgrade", "--no-input", "-r", str(req),
-    ])
+    _pip_install(["-r", str(req)])
 
 
 def build_exe(script_path: str, app_name: str, console: bool) -> Path:
     """Собирает .exe из указанного скрипта и возвращает путь к готовому файлу."""
-    script = Path(script_path).resolve()
+    script = Path(script_path)
+    if not script.is_absolute():
+        script = BASE_DIR / script
+    script = script.resolve()
     if not script.exists():
         raise FileNotFoundError(
             f"Файл не найден: {script}\n"
@@ -78,14 +96,17 @@ def build_exe(script_path: str, app_name: str, console: bool) -> Path:
             f"либо укажите правильный путь: python build.py путь\\к\\файлу.py"
         )
 
+    dist_dir = BASE_DIR / "dist"
+    work_dir = BASE_DIR / "build"
+
     args = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",
         "--noconfirm",
         "--name", app_name,
-        "--distpath", "dist",
-        "--workpath", "build",
-        "--specpath", ".",
+        "--distpath", str(dist_dir),
+        "--workpath", str(work_dir),
+        "--specpath", str(BASE_DIR),
     ]
     if not console:
         args.append("--windowed")  # без чёрного консольного окна
@@ -96,10 +117,10 @@ def build_exe(script_path: str, app_name: str, console: bool) -> Path:
     subprocess.check_call(args)
 
     # На Windows PyInstaller сам добавляет расширение .exe к имени.
-    exe_path = Path("dist") / f"{app_name}.exe"
+    exe_path = dist_dir / f"{app_name}.exe"
     if not exe_path.exists():
         # На случай иной платформы/конфигурации — файл без расширения.
-        alt = Path("dist") / app_name
+        alt = dist_dir / app_name
         if alt.exists():
             exe_path = alt
     return exe_path
@@ -107,7 +128,7 @@ def build_exe(script_path: str, app_name: str, console: bool) -> Path:
 
 def cleanup(app_name: str) -> None:
     """Удаляет временные файлы сборки, оставляя только готовый .exe в dist/."""
-    for path in [Path("build"), Path(f"{app_name}.spec")]:
+    for path in [BASE_DIR / "build", BASE_DIR / f"{app_name}.spec"]:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
         elif path.is_file():
