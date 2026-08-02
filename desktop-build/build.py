@@ -57,6 +57,17 @@ def ensure_pyinstaller() -> None:
         ])
 
 
+def ensure_requirements() -> None:
+    """Устанавливает зависимости проекта из requirements.txt, если файл есть."""
+    req = Path("requirements.txt")
+    if not req.exists():
+        return
+    print("Устанавливаю зависимости из requirements.txt...")
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "--upgrade", "--no-input", "-r", str(req),
+    ])
+
+
 def build_exe(script_path: str, app_name: str, console: bool) -> Path:
     """Собирает .exe из указанного скрипта и возвращает путь к готовому файлу."""
     script = Path(script_path).resolve()
@@ -112,6 +123,7 @@ def run() -> int:
 
     ensure_pip()
     ensure_pyinstaller()
+    ensure_requirements()
     exe_path = build_exe(script_path, app_name, console)
     cleanup(app_name)
 
